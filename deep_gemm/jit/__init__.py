@@ -1,2 +1,2 @@
-from .compiler import get_nvcc_compiler, build, NVCCCompiler, NVRTCCompiler
+from .compiler import NVCCCompiler, NVRTCCompiler, build, get_nvcc_compiler
 from .runtime import Runtime

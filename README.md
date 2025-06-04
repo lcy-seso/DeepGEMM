@@ -171,7 +171,7 @@ DeepGEMM employs a fully [Just-In-Time](deep_gemm/jit) (JIT) design, with no com
 - Automatic selection of block sizes, number of warpgroups, optimal pipeline stages, and TMA cluster size
   - But without auto-tuning, the optimal one is deterministically selected
 - Full unrolling of the MMA pipelines, providing compilers with more optimization opportunities
-  - Very important for small shapes 
+  - Very important for small shapes
   - Refer to `launch_k_iterations` in [the kernel file](deep_gemm/include/deep_gemm/fp8_gemm.cuh) for details
 
 Overall, JIT significantly improves performance for small shapes, similar to the approach of the [Triton](https://github.com/triton-lang/triton/) compiler.
@@ -199,7 +199,7 @@ This code repository is released under [the MIT License](LICENSE).
 
 ```bibtex
 @misc{deepgemm2025,
-      title={DeepGEMM: clean and efficient FP8 GEMM kernels with fine-grained scaling}, 
+      title={DeepGEMM: clean and efficient FP8 GEMM kernels with fine-grained scaling},
       author={Chenggang Zhao and Liang Zhao and Jiashi Li and Zhean Xu},
       year={2025},
       publisher = {GitHub},

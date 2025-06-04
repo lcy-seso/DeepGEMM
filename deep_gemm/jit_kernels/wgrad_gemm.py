@@ -1,18 +1,30 @@
-import torch
 from typing import List, Tuple
 
+import torch
+
 from ..jit import build
-from .runtime import (
-    FP8WGradGemmRuntime, GemmType,
-    make_2d_tma_a_desc, make_2d_tma_b_desc,
-    make_2d_tma_d_desc, make_2d_tma_scales_desc)
 from .gemm import get_best_configs
-from .utils import ceil_div, get_num_sms, get_col_major_tma_aligned_tensor, get_tma_aligned_size
+from .runtime import (
+    FP8WGradGemmRuntime,
+    GemmType,
+    make_2d_tma_a_desc,
+    make_2d_tma_b_desc,
+    make_2d_tma_d_desc,
+    make_2d_tma_scales_desc,
+)
+from .utils import (
+    ceil_div,
+    get_col_major_tma_aligned_tensor,
+    get_num_sms,
+    get_tma_aligned_size,
+)
 
 
-def wgrad_gemm_fp8_fp8_fp32_nt(lhs: Tuple[torch.Tensor, torch.Tensor],
-                               rhs: Tuple[torch.Tensor, torch.Tensor],
-                               out: torch.Tensor):
+def wgrad_gemm_fp8_fp8_fp32_nt(
+    lhs: Tuple[torch.Tensor, torch.Tensor],
+    rhs: Tuple[torch.Tensor, torch.Tensor],
+    out: torch.Tensor,
+):
     """
     Perform a weight gradient GEMM with FP8 inputs and FP32 output, with 1x128 LHS scaling and 1x128 RHS scaling.
         Results will be accumulated into the output tensor.
@@ -40,10 +52,20 @@ def wgrad_gemm_fp8_fp8_fp32_nt(lhs: Tuple[torch.Tensor, torch.Tensor],
     # Type and shape checks
     assert m == m_ and n == n_ and k == k_
     assert n > 0 and m > 0
-    assert lhs_scales.shape == (m, ceil_div(k, 128)) or lhs_scales.shape == (ceil_div(k, 128), m)
-    assert rhs_scales.shape == (n, ceil_div(k, 128)) or rhs_scales.shape == (ceil_div(k, 128), n)
-    assert lhs.dtype == torch.float8_e4m3fn and lhs_scales.dtype == torch.float32
-    assert rhs.dtype == torch.float8_e4m3fn and rhs_scales.dtype == torch.float32
+    assert lhs_scales.shape == (m, ceil_div(k, 128)) or lhs_scales.shape == (
+        ceil_div(k, 128),
+        m,
+    )
+    assert rhs_scales.shape == (n, ceil_div(k, 128)) or rhs_scales.shape == (
+        ceil_div(k, 128),
+        n,
+    )
+    assert (
+        lhs.dtype == torch.float8_e4m3fn and lhs_scales.dtype == torch.float32
+    )
+    assert (
+        rhs.dtype == torch.float8_e4m3fn and rhs_scales.dtype == torch.float32
+    )
     assert out.dtype == torch.float
     assert lhs.stride(1) == 1 and out.stride(1) == 1 and rhs.stride(1) == 1
 
@@ -70,53 +92,82 @@ def wgrad_gemm_fp8_fp8_fp32_nt(lhs: Tuple[torch.Tensor, torch.Tensor],
 
     # Auto-tuning with compilation
     num_sms = get_num_sms()
-    num_sms, block_m, block_n, num_stages, tma_multicast_config, smem_config = get_best_configs(
-        m, n, aligned_k, 1, num_sms, is_fp32_out=True, is_wgrad=True)
+    num_sms, block_m, block_n, num_stages, tma_multicast_config, smem_config = (
+        get_best_configs(
+            m, n, aligned_k, 1, num_sms, is_fp32_out=True, is_wgrad=True
+        )
+    )
     num_last_stages = ceil_div(k, 128) % num_stages
     block_k = 128
     num_tma_threads = 128
     num_math_threads_per_group = 128
 
-    tensor_map_a = make_2d_tma_a_desc(GemmType.Normal, lhs, m, k, lhs.stride(0), block_m, block_k, 1)
-    tensor_map_b = make_2d_tma_b_desc(GemmType.Normal, rhs, n, k, rhs.stride(0), block_n, block_k, 1)
-    tensor_map_d = make_2d_tma_d_desc(GemmType.Normal, out, m, n, out.stride(0), block_m, block_n, 1, smem_config[1])
-    tensor_map_scales_a = make_2d_tma_scales_desc(GemmType.Normal, lhs_scales, m, k, block_m, block_k, 1)
-    tensor_map_scales_b = make_2d_tma_scales_desc(GemmType.Normal, rhs_scales, n, k, block_n, block_k, 1)
+    tensor_map_a = make_2d_tma_a_desc(
+        GemmType.Normal, lhs, m, k, lhs.stride(0), block_m, block_k, 1
+    )
+    tensor_map_b = make_2d_tma_b_desc(
+        GemmType.Normal, rhs, n, k, rhs.stride(0), block_n, block_k, 1
+    )
+    tensor_map_d = make_2d_tma_d_desc(
+        GemmType.Normal,
+        out,
+        m,
+        n,
+        out.stride(0),
+        block_m,
+        block_n,
+        1,
+        smem_config[1],
+    )
+    tensor_map_scales_a = make_2d_tma_scales_desc(
+        GemmType.Normal, lhs_scales, m, k, block_m, block_k, 1
+    )
+    tensor_map_scales_b = make_2d_tma_scales_desc(
+        GemmType.Normal, rhs_scales, n, k, block_n, block_k, 1
+    )
 
     kwargs = {
         # Templated arguments
-        'GEMM_TYPE': GemmType.Normal,
-        'NUM_TMA_THREADS': num_tma_threads,
-        'NUM_MATH_THREADS_PER_GROUP': num_math_threads_per_group,
-        'M': m, 'N': n, 'K': aligned_k,
-        'NUM_GROUPS': 1,
-        'BLOCK_M': block_m, 'BLOCK_N': block_n, 'BLOCK_K': block_k,
-        'NUM_STAGES': num_stages,
-        'NUM_LAST_STAGES': num_last_stages,
-        'NUM_TMA_MULTICAST': tma_multicast_config[0],
-        'IS_TMA_MULTICAST_ON_A': tma_multicast_config[1],
+        "GEMM_TYPE": GemmType.Normal,
+        "NUM_TMA_THREADS": num_tma_threads,
+        "NUM_MATH_THREADS_PER_GROUP": num_math_threads_per_group,
+        "M": m,
+        "N": n,
+        "K": aligned_k,
+        "NUM_GROUPS": 1,
+        "BLOCK_M": block_m,
+        "BLOCK_N": block_n,
+        "BLOCK_K": block_k,
+        "NUM_STAGES": num_stages,
+        "NUM_LAST_STAGES": num_last_stages,
+        "NUM_TMA_MULTICAST": tma_multicast_config[0],
+        "IS_TMA_MULTICAST_ON_A": tma_multicast_config[1],
         # Runtime arguments
-        'NUM_SMS': num_sms,
-        'SMEM_SIZE': smem_config[0],
-        'TENSOR_MAP_A': tensor_map_a,
-        'TENSOR_MAP_B': tensor_map_b,
-        'TENSOR_MAP_SCALES_A': tensor_map_scales_a,
-        'TENSOR_MAP_SCALES_B': tensor_map_scales_b,
-        'TENSOR_MAP_D': tensor_map_d,
-        'STREAM': torch.cuda.current_stream().cuda_stream,
-        'DEVICE_INDEX': out.device.index
+        "NUM_SMS": num_sms,
+        "SMEM_SIZE": smem_config[0],
+        "TENSOR_MAP_A": tensor_map_a,
+        "TENSOR_MAP_B": tensor_map_b,
+        "TENSOR_MAP_SCALES_A": tensor_map_scales_a,
+        "TENSOR_MAP_SCALES_B": tensor_map_scales_b,
+        "TENSOR_MAP_D": tensor_map_d,
+        "STREAM": torch.cuda.current_stream().cuda_stream,
+        "DEVICE_INDEX": out.device.index,
     }
 
     # Generate, build and run the kernel
     code = FP8WGradGemmRuntime.generate(kwargs)
-    runtime = build('wgrad_gemm_fp8_fp8_fp32_nt', code, FP8WGradGemmRuntime, kwargs)
+    runtime = build(
+        "wgrad_gemm_fp8_fp8_fp32_nt", code, FP8WGradGemmRuntime, kwargs
+    )
     runtime(**kwargs)
 
 
-def k_grouped_wgrad_gemm_fp8_fp8_fp32_nt(lhs: Tuple[torch.Tensor, torch.Tensor],
-                                         rhs: Tuple[torch.Tensor, torch.Tensor],
-                                         out: torch.Tensor,
-                                         batch_sizes: List[int]):
+def k_grouped_wgrad_gemm_fp8_fp8_fp32_nt(
+    lhs: Tuple[torch.Tensor, torch.Tensor],
+    rhs: Tuple[torch.Tensor, torch.Tensor],
+    out: torch.Tensor,
+    batch_sizes: List[int],
+):
     """
     Perform a k-grouped weight gradient GEMM with FP8 inputs and FP32 output, with 1x128 LHS scaling and 1x128 RHS scaling.
         Results will be accumulated into the output tensor.
@@ -147,11 +198,17 @@ def k_grouped_wgrad_gemm_fp8_fp8_fp32_nt(lhs: Tuple[torch.Tensor, torch.Tensor],
 
     for i in range(num_batches):
         k = batch_sizes[i]
-        lhs_slice = lhs[lhs_offset:lhs_offset + m * k].view(m, k)
-        rhs_slice = rhs[rhs_offset:rhs_offset + n * k].view(n, k)
-        lhs_scales_slice = lhs_scales[scales_offset:scales_offset + ceil_div(k, 128)]
-        rhs_scales_slice = rhs_scales[scales_offset:scales_offset + ceil_div(k, 128)]
-        wgrad_gemm_fp8_fp8_fp32_nt((lhs_slice, lhs_scales_slice), (rhs_slice, rhs_scales_slice), out[i])
+        lhs_slice = lhs[lhs_offset : lhs_offset + m * k].view(m, k)
+        rhs_slice = rhs[rhs_offset : rhs_offset + n * k].view(n, k)
+        lhs_scales_slice = lhs_scales[
+            scales_offset : scales_offset + ceil_div(k, 128)
+        ]
+        rhs_scales_slice = rhs_scales[
+            scales_offset : scales_offset + ceil_div(k, 128)
+        ]
+        wgrad_gemm_fp8_fp8_fp32_nt(
+            (lhs_slice, lhs_scales_slice), (rhs_slice, rhs_scales_slice), out[i]
+        )
 
         lhs_offset += m * k
         rhs_offset += n * k

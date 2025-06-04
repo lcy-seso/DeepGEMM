@@ -3,6 +3,4 @@
 
 using namespace deep_gemm;
 
-int main() {
-    return 0;
-}
+int main() { return 0; }
